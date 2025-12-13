@@ -1,0 +1,100 @@
+%%%% IACR Transactions TEMPLATE %%%%
+% This file shows how to use the iacrtrans class to write a paper.
+% Written by Gaetan Leurent gaetan.leurent@inria.fr (2020)
+% Public Domain (CC0)
+
+
+%%%% 1. DOCUMENTCLASS %%%%
+\documentclass[journal=tosc,preprint]{iacrtrans}
+
+%%%% 3. AUTHOR, INSTITUTE %%%%
+\author{Andrew Witten}
+\institute{
+  University of Maryland, College Park, USA \email{awitten1@umd.edu}
+}
+%%%% NOTES:
+% - We need a city name for indexation purpose, even if it is redundant
+%   (eg: University of Atlantis, Atlantis, Atlantis)
+
+
+%%%% 4. TITLE %%%%
+\title{Verifiable Database Transactions}
+
+\begin{document}
+
+\maketitle
+
+
+%%%% 5. KEYWORDS %%%%
+\keywords{Database systems \and Verifiable Computation}
+
+
+%%%% 6. ABSTRACT %%%%
+\begin{abstract}
+In this work we present a database system which provides cryptographically verifiable ACID transactions.  We evaluate our work,
+compare it to the related LitmusDB, and describe potential improvements to the system.
+\end{abstract}
+
+
+%%%% 7. PAPER CONTENT %%%%
+\section{Introduction}
+
+A core feature that database systems provide are ACID transactions.
+ACID transactions enable application developers to build their applications
+without worrying about race conditions on their data.
+
+Unfortunately, many database providers fail to provide the consistency guarantees that they
+claim to provide.  The Jepsen project \cite{b1} has found that
+many popular, industry strength systems have failed to provide ACID.  It would therefore benefit
+users if databases could cryptographically prove that they provide ACID.
+
+
+\section{Background}
+\subsection{Database Transaction}
+
+Users of a database system submit transactions to the database system.  A transaction
+is a sequence of reads and writes.  High performance systems run many transations concurrently from
+many clients. Database systems provide ACID transactions. In this paper, we focus only on the Isolation property.
+Isolation means that the database system provides a property called \textit{Serializability}.
+Serializability means that transactions appear to execute sequentially
+(even though the system may in reality run them concurrently).
+
+In particular, suppose we have transactions
+\(T_1,T_2,...,T_n\) running in the system.  Each \(T_i\) may be thought of as a function operating on the database
+$T_i\colon D\rightarrow D$ (where \(D\) is the set of possible database states).  Serializability means that if \(d_{initial}\) is the inital state of the database
+and \(d_{final}\) is the final state of the database, then $d_{final} = \left( T_{\pi(1)} \circ \dots \circ T_{\pi(n)} \right) \left( d_{initial} \right)$ where \(\pi\)
+is a some permutation \cite{b2}.
+
+This property is extremely value to developers because it allows developers to maintain invariants on their data.  If each $T_i$ maintains
+an invariant, then the composition of them do as well.  For example client A may write a transaction transferring \$100 from user A to user B.
+That transaction maintains the invariant that the total amount of money has stayed the same.  Client B might at the same time
+write a transaction computing the total amount of money across all users.  Serializability guarantees that client B observes
+the correct amount of money.
+
+It is therefore paramount that database systems actually provide Isolation.  Failures to do so can (and will) lead to
+application bugs (more doctors on call at the same time than is necessary \cite{b5}) or even security vulnerabilities \cite{b6}.
+Despite their importance, database providers for one reason or another (bugs or deliberately) fail to provide the isolation levels
+that users request.  Making matters worse, users usually have little or no ability to detect when a database provider has failed
+to provide Serializability.  The goal of this work is to provide cryptographic proof that Serializability has been provided.
+
+\subsection{Merkle Trees}
+
+This work depends heavily on Merkle Trees. We therefore review Merkle Trees here and describe which properties we depend on.
+
+\section{Related Work}
+There is related work such as zkSQL \cite{b3} and vSQL \cite{b4} for providing authenticated answers
+to ad-hoc SQL queries.  This involves providing ZK-proofs of particular SQL operators (such as hash join and filter operators) and composing those proofs.
+A recent system LitmusDB \cite{b3} set out to solve
+
+\begin{thebibliography}{99}
+
+\bibitem{b1} K. Kingbury https://jepsen.io/analyses Jepsen Analyses
+\bibitem{b2} H.T. Kung and John T. Robinson, On Optimistic Methods for Concurrency Control
+\bibitem{b3} X. Li, C. Weng, Y. Xu, X. Wang, and J. Rogers, ZKSQL: Verifiable and Efficient Query Evaluation with Zero-Knowledge Proofs
+\bibitem{b4} Y. Zheng et al, vSQL: Verifying Arbitrary SQL Queries over Dynamic Outsourced Databases
+\bibitem{b5} Cahill et al, Serializable Isolation for Snapshot Databases
+\bibitem{b6} T. Warszawski and P. Bailis, ACIDRain: Concurrency-Related Attacks on Database-Backed Web Applications
+
+\end{thebibliography}
+
+\end{document}
