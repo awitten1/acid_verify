@@ -7,6 +7,11 @@
 %%%% 1. DOCUMENTCLASS %%%%
 \documentclass[journal=tosc,preprint]{iacrtrans}
 
+
+\usepackage{tikz}
+\usepackage{forest}
+\usetikzlibrary{arrows.meta} % For nicer arrowheads
+
 %%%% 3. AUTHOR, INSTITUTE %%%%
 \author{Andrew Witten}
 \institute{
@@ -32,7 +37,7 @@
 %%%% 6. ABSTRACT %%%%
 \begin{abstract}
 In this work we present a database system which provides cryptographically verifiable ACID transactions.  We evaluate our work,
-compare it to the related LitmusDB, and describe potential improvements to the system.
+compare it to the related system LitmusDB, and describe potential improvements to our system.
 \end{abstract}
 
 
@@ -81,6 +86,93 @@ to provide Serializability.  The goal of this work is to provide cryptographic p
 
 This work depends heavily on Merkle Trees. We therefore review Merkle Trees here and describe which properties we depend on.
 
+\begin{figure}[h]
+  \centering
+  % Forest configuration
+  \begin{forest}
+    for tree={
+      draw,              % Draw boxes around nodes
+      circle,            % Make nodes circular (remove for rectangles)
+      minimum size=2.5em,% Uniform size
+      inner sep=1pt,     % Padding
+      edge={-Stealth},   % Arrow style (remove for plain lines)
+      l sep=1cm,         % Vertical distance between levels
+      s sep=1cm,         % Horizontal distance between nodes
+      font=\small
+    }
+    % The Tree Structure (Brackets define nesting)
+    [$H_{root}$
+      [$H_{01}$
+        [$H_0$
+          [$L_0$]
+        ]
+        [$H_1$
+          [$L_1$]
+        ]
+      ]
+      [$H_{23}$
+        [$H_2$
+          [$L_2$]
+        ]
+        [$H_3$
+          [$L_3$]
+        ]
+      ]
+    ]
+  \end{forest}
+  \caption{A Merkle Hash Tree structure.}
+  \label{fig:merkle}
+\end{figure}
+
+A merkle tree is depicted in \autoref{fig:merkle}.  A merkle tree \cite{b8} is a binary tree of depth $\log n$.
+A given node of a merkle tree stores a hash of its two children, for example $H_{01} = \text{Hash}\left(H_0 \| H_1\right)$
+and $H_0 = \text{Hash}\left(L_0\right)$.
+
+Assume now that a server is storing a set of data items $x_1\dots x_n$ and a client is only storing $H_{root}$, where the
+merkle tree is built over the $x_i$.
+The server is able to prove to the client that a given $x_i$ is stored on the server by providing the nodes
+adjacent to the path from $x_i$ to the root in the tree.
+These nodes allow a client to recompute the root of the tree and compare it against the root is has stored.
+This proof is depicted in \autoref{fig:merkle_proof}.
+
+\begin{figure}[h]
+  \centering
+  % Forest configuration
+  \begin{forest}
+    for tree={
+      draw,              % Draw boxes around nodes
+      circle,            % Make nodes circular (remove for rectangles)
+      minimum size=2.5em,% Uniform size
+      inner sep=1pt,     % Padding
+      edge={-Stealth},   % Arrow style (remove for plain lines)
+      l sep=1cm,         % Vertical distance between levels
+      s sep=1cm,         % Horizontal distance between nodes
+      font=\small
+    }
+    % The Tree Structure (Brackets define nesting)
+    [$H_{root}$, dotted
+      [$H_{01}$, fill=red!30
+        [$H_0$
+          [$L_0$]
+        ]
+        [$H_1$
+          [$L_1$]
+        ]
+      ]
+      [$H_{23}$, dotted
+        [$H_2$, dotted
+          [$L_2$]
+        ]
+        [$H_3$, fill=red!30
+          [$L_3$]
+        ]
+      ]
+    ]
+  \end{forest}
+  \caption{A Merkle Tree proof.  To prove that $L_2$ is stored in the tree, the server sends the nodes in red.}
+  \label{fig:merkle_proof}
+\end{figure}
+
 \section{Related Work}
 There is related work such as zkSQL \cite{b3} and vSQL \cite{b4} for providing authenticated answers
 to ad-hoc SQL queries.  This involves providing ZK-proofs of particular SQL operators (such as hash join and filter operators) and composing those proofs.
@@ -94,7 +186,7 @@ A recent system LitmusDB \cite{b3} set out to solve
 \bibitem{b4} Y. Zheng et al, vSQL: Verifying Arbitrary SQL Queries over Dynamic Outsourced Databases
 \bibitem{b5} Cahill et al, Serializable Isolation for Snapshot Databases
 \bibitem{b6} T. Warszawski and P. Bailis, ACIDRain: Concurrency-Related Attacks on Database-Backed Web Applications
-
+\bibitem{b8} J. Katz and Y. Lindell, Introduction To Modern Cryptography
 \end{thebibliography}
 
 \end{document}
