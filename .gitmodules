@@ -1,0 +1,3 @@
+[submodule "cpp/merklecpp"]
+	path = cpp/merklecpp
+	url = git@github.com:microsoft/merklecpp.git
