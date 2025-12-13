@@ -23,12 +23,13 @@ pub struct Proof {
     pub write_proof: MerkleProof<Sha256>,
 }
 
-struct DbState {
+// contains the actual data and a merkle tree of that data.
+struct DB {
     data: BTreeMap<String, String>,
     tree: MerkleTree<Sha256>,
 }
 
-impl DbState {
+impl DB {
     fn new() -> Self {
         Self {
             data: BTreeMap::new(),
@@ -36,6 +37,7 @@ impl DbState {
         }
     }
 
+    // rebuild the merkle tree.
     fn refresh_tree(&mut self) {
         if self.data.is_empty() {
             self.tree = MerkleTree::<Sha256>::new();
@@ -49,13 +51,13 @@ impl DbState {
 }
 
 #[derive(Clone)]
-pub struct VerifiableStore {
-    state: Arc<RwLock<DbState>>,
+pub struct VerifiableDB {
+    state: Arc<RwLock<DB>>,
 }
 
-impl VerifiableStore {
+impl VerifiableDB {
     pub fn new() -> Self {
-        Self { state: Arc::new(RwLock::new(DbState::new())) }
+        Self { state: Arc::new(RwLock::new(DB::new())) }
     }
 
     pub fn begin(&self) -> Transaction<'_> {
@@ -63,8 +65,8 @@ impl VerifiableStore {
         let old_root = guard.tree.root().unwrap_or([0u8; 32]);
 
         Transaction {
-            store_guard: guard,
-            read_log: HashMap::new(),
+            guard: guard,
+            performed_reads: HashMap::new(),
             pending_writes: HashMap::new(),
             old_root,
         }
@@ -72,8 +74,8 @@ impl VerifiableStore {
 }
 
 pub struct Transaction<'a> {
-    store_guard: RwLockWriteGuard<'a, DbState>,
-    read_log: HashMap<String, String>,
+    guard: RwLockWriteGuard<'a, DB>,
+    performed_reads: HashMap<String, String>,
     pending_writes: HashMap<String, String>,
     old_root: Hash,
 }
@@ -84,10 +86,10 @@ impl<'a> Transaction<'a> {
             return Some(val.clone());
         }
 
-        let val = self.store_guard.data.get(key).cloned();
+        let val = self.guard.data.get(key).cloned();
 
         if let Some(ref v) = val {
-            self.read_log.insert(key.to_string(), v.clone());
+            self.performed_reads.insert(key.to_string(), v.clone());
         }
         val
     }
@@ -97,31 +99,31 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn commit(mut self) -> Proof {
-        let total_leaves_old = self.store_guard.data.len();
+        let total_leaves_old = self.guard.data.len();
         let mut read_indices = Vec::new();
 
-        for (i, (k, _)) in self.store_guard.data.iter().enumerate() {
-            if self.read_log.contains_key(k) {
+        for (i, (k, _)) in self.guard.data.iter().enumerate() {
+            if self.performed_reads.contains_key(k) {
                 read_indices.push(i);
             }
         }
-        let read_proof = self.store_guard.tree.proof(&read_indices);
+        let read_proof = self.guard.tree.proof(&read_indices);
 
         for (k, v) in &self.pending_writes {
-            self.store_guard.data.insert(k.clone(), v.clone());
+            self.guard.data.insert(k.clone(), v.clone());
         }
 
-        self.store_guard.refresh_tree();
-        let new_root = self.store_guard.tree.root().unwrap_or([0u8; 32]);
-        let total_leaves_new = self.store_guard.data.len();
+        self.guard.refresh_tree();
+        let new_root = self.guard.tree.root().unwrap_or([0u8; 32]);
+        let total_leaves_new = self.guard.data.len();
 
         let mut write_indices = Vec::new();
-        for (i, (k, _)) in self.store_guard.data.iter().enumerate() {
+        for (i, (k, _)) in self.guard.data.iter().enumerate() {
             if self.pending_writes.contains_key(k) {
                 write_indices.push(i);
             }
         }
-        let write_proof = self.store_guard.tree.proof(&write_indices);
+        let write_proof = self.guard.tree.proof(&write_indices);
 
         Proof {
             old_root: self.old_root,
@@ -178,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_read_and_write_proofs() {
-        let store = VerifiableStore::new();
+        let store = VerifiableDB::new();
 
         let mut t0 = store.begin();
         t0.put("alice", "100");
@@ -205,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_stale_read_attack() {
-        let store = VerifiableStore::new();
+        let store = VerifiableDB::new();
 
         let mut t0 = store.begin();
         t0.put("x", "10");
