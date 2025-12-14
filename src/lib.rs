@@ -1,6 +1,6 @@
 use rs_merkle::{algorithms::Sha256, MerkleProof, MerkleTree};
 use sha2::Digest;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock, RwLockWriteGuard};
 
 pub type Hash = [u8; 32];
@@ -16,14 +16,10 @@ pub struct Proof {
     pub old_root: Hash,
     pub new_root: Hash,
     pub total_leaves_old: usize,
-    pub read_indices: Vec<usize>,
-    pub read_proof: MerkleProof<Sha256>,
-    pub total_leaves_new: usize,
-    pub write_indices: Vec<usize>,
-    pub write_proof: MerkleProof<Sha256>,
+    pub affected_indices: Vec<usize>,
+    pub pre_state_proof: MerkleProof<Sha256>,
 }
 
-// contains the actual data and a merkle tree of that data.
 struct DB {
     data: BTreeMap<String, String>,
     tree: MerkleTree<Sha256>,
@@ -37,7 +33,6 @@ impl DB {
         }
     }
 
-    // rebuild the merkle tree.
     fn refresh_tree(&mut self) {
         if self.data.is_empty() {
             self.tree = MerkleTree::<Sha256>::new();
@@ -87,7 +82,6 @@ impl<'a> Transaction<'a> {
         }
 
         let val = self.guard.data.get(key).cloned();
-
         if let Some(ref v) = val {
             self.performed_reads.insert(key.to_string(), v.clone());
         }
@@ -100,14 +94,23 @@ impl<'a> Transaction<'a> {
 
     pub fn commit(mut self) -> Proof {
         let total_leaves_old = self.guard.data.len();
-        let mut read_indices = Vec::new();
 
+        let mut affected_keys = HashSet::new();
+        for k in self.performed_reads.keys() {
+            affected_keys.insert(k.clone());
+        }
+        for k in self.pending_writes.keys() {
+            affected_keys.insert(k.clone());
+        }
+
+        let mut affected_indices = Vec::new();
         for (i, (k, _)) in self.guard.data.iter().enumerate() {
-            if self.performed_reads.contains_key(k) {
-                read_indices.push(i);
+            if affected_keys.contains(k) {
+                affected_indices.push(i);
             }
         }
-        let read_proof = self.guard.tree.proof(&read_indices);
+
+        let pre_state_proof = self.guard.tree.proof(&affected_indices);
 
         for (k, v) in &self.pending_writes {
             self.guard.data.insert(k.clone(), v.clone());
@@ -115,63 +118,63 @@ impl<'a> Transaction<'a> {
 
         self.guard.refresh_tree();
         let new_root = self.guard.tree.root().unwrap_or([0u8; 32]);
-        let total_leaves_new = self.guard.data.len();
-
-        let mut write_indices = Vec::new();
-        for (i, (k, _)) in self.guard.data.iter().enumerate() {
-            if self.pending_writes.contains_key(k) {
-                write_indices.push(i);
-            }
-        }
-        let write_proof = self.guard.tree.proof(&write_indices);
 
         Proof {
             old_root: self.old_root,
             new_root,
             total_leaves_old,
-            read_indices,
-            read_proof,
-            total_leaves_new,
-            write_indices,
-            write_proof,
+            affected_indices,
+            pre_state_proof,
         }
     }
 }
 
-pub fn verify_transaction(
+pub fn verify_secure_update(
     proof: &Proof,
-    reads: &HashMap<String, String>,
-    writes: &HashMap<String, String>,
+    old_state: &HashMap<String, String>,
+    new_state: &HashMap<String, String>,
 ) -> bool {
-    let mut sorted_reads: Vec<(&String, &String)> = reads.iter().collect();
-    sorted_reads.sort_by_key(|(k, _)| *k);
+    let mut sorted_keys: Vec<&String> = old_state.keys().collect();
+    sorted_keys.sort();
 
-    let read_leaves: Vec<Hash> = sorted_reads.iter()
-        .map(|(k, v)| hash_kv(k, v))
+    let old_leaves: Vec<Hash> = sorted_keys.iter()
+        .map(|k| {
+            let val = old_state.get(*k).expect("Key missing in old state");
+            hash_kv(k, val)
+        })
         .collect();
 
-    let reads_ok = proof.read_proof.verify(
+    let read_ok = proof.pre_state_proof.verify(
         proof.old_root,
-        &proof.read_indices,
-        &read_leaves,
+        &proof.affected_indices,
+        &old_leaves,
         proof.total_leaves_old,
     );
 
-    let mut sorted_writes: Vec<(&String, &String)> = writes.iter().collect();
-    sorted_writes.sort_by_key(|(k, _)| *k);
+    if !read_ok {
+        println!("Security Alert: Pre-state proof invalid.");
+        return false;
+    }
 
-    let write_leaves: Vec<Hash> = sorted_writes.iter()
-        .map(|(k, v)| hash_kv(k, v))
+    let new_leaves: Vec<Hash> = sorted_keys.iter()
+        .map(|k| {
+            let val = new_state.get(*k).or_else(|| old_state.get(*k)).unwrap();
+            hash_kv(k, val)
+        })
         .collect();
 
-    let writes_ok = proof.write_proof.verify(
-        proof.new_root,
-        &proof.write_indices,
-        &write_leaves,
-        proof.total_leaves_new,
+    let calculated_root_res = proof.pre_state_proof.root(
+        &proof.affected_indices,
+        &new_leaves,
+        proof.total_leaves_old
     );
 
-    reads_ok && writes_ok
+    let calculated_root = match calculated_root_res {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
+    calculated_root == proof.new_root
 }
 
 #[cfg(test)]
@@ -179,48 +182,57 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_read_and_write_proofs() {
+    fn test_secure_update_transition() {
         let store = VerifiableDB::new();
 
         let mut t0 = store.begin();
         t0.put("alice", "100");
+        t0.put("bob", "50");
         t0.commit();
 
         let mut txn = store.begin();
 
-        let val = txn.get("alice").expect("Alice should exist");
-        assert_eq!(val, "100");
+        let old_val = txn.get("alice").expect("Alice should exist");
+        assert_eq!(old_val, "100");
 
-        txn.put("bob", "50");
-
+        txn.put("alice", "200");
         let proof = txn.commit();
 
-        let mut expected_reads = HashMap::new();
-        expected_reads.insert("alice".to_string(), "100".to_string());
+        let mut old_state = HashMap::new();
+        old_state.insert("alice".to_string(), "100".to_string());
 
-        let mut expected_writes = HashMap::new();
-        expected_writes.insert("bob".to_string(), "50".to_string());
+        let mut new_state = HashMap::new();
+        new_state.insert("alice".to_string(), "200".to_string());
 
-        let valid = verify_transaction(&proof, &expected_reads, &expected_writes);
-        assert!(valid);
+        let is_valid = verify_secure_update(
+            &proof,
+            &old_state,
+            &new_state
+        );
+
+        assert!(is_valid, "The derived root should match the server's new root");
     }
 
     #[test]
-    fn test_stale_read_attack() {
+    fn test_blind_write_is_covered() {
         let store = VerifiableDB::new();
 
         let mut t0 = store.begin();
         t0.put("x", "10");
+        t0.put("y", "20");
         t0.commit();
 
         let mut txn = store.begin();
-        txn.get("x");
+        txn.put("x", "99");
         let proof = txn.commit();
 
-        let mut fake_reads = HashMap::new();
-        fake_reads.insert("x".to_string(), "20".to_string());
+        let mut old_state = HashMap::new();
+        old_state.insert("x".to_string(), "10".to_string());
 
-        let valid = verify_transaction(&proof, &fake_reads, &HashMap::new());
-        assert!(!valid);
+        let mut new_state = HashMap::new();
+        new_state.insert("x".to_string(), "99".to_string());
+
+        let is_valid = verify_secure_update(&proof, &old_state, &new_state);
+        assert!(is_valid);
     }
 }
