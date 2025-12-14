@@ -48,11 +48,12 @@ impl DB {
 #[derive(Clone)]
 pub struct VerifiableDB {
     state: Arc<RwLock<DB>>,
+    verify_txn: bool,
 }
 
 impl VerifiableDB {
-    pub fn new() -> Self {
-        Self { state: Arc::new(RwLock::new(DB::new())) }
+    pub fn new(verify_txn: bool) -> Self {
+        Self { state: Arc::new(RwLock::new(DB::new())), verify_txn }
     }
 
     pub fn begin(&self) -> Transaction<'_> {
@@ -64,6 +65,7 @@ impl VerifiableDB {
             performed_reads: HashMap::new(),
             pending_writes: HashMap::new(),
             old_root,
+            verify_txn: self.verify_txn,
         }
     }
 }
@@ -73,6 +75,7 @@ pub struct Transaction<'a> {
     performed_reads: HashMap<String, String>,
     pending_writes: HashMap<String, String>,
     old_root: Hash,
+    verify_txn: bool,
 }
 
 impl<'a> Transaction<'a> {
@@ -92,39 +95,45 @@ impl<'a> Transaction<'a> {
         self.pending_writes.insert(key.to_string(), value.to_string());
     }
 
-    pub fn commit(mut self) -> Proof {
-        let total_leaves_old = self.guard.data.len();
+    pub fn commit(mut self) -> Option<Proof> {
+        if self.verify_txn {
+            let total_leaves_old = self.guard.data.len();
 
-        let mut affected_keys = HashSet::new();
-        for k in self.performed_reads.keys() {
-            affected_keys.insert(k.clone());
-        }
-        for k in self.pending_writes.keys() {
-            affected_keys.insert(k.clone());
-        }
-
-        let mut affected_indices = Vec::new();
-        for (i, (k, _)) in self.guard.data.iter().enumerate() {
-            if affected_keys.contains(k) {
-                affected_indices.push(i);
+            let mut affected_keys = HashSet::new();
+            for k in self.performed_reads.keys() {
+                affected_keys.insert(k.clone());
             }
-        }
+            for k in self.pending_writes.keys() {
+                affected_keys.insert(k.clone());
+            }
 
-        let pre_state_proof = self.guard.tree.proof(&affected_indices);
+            let mut affected_indices = Vec::new();
+            for (i, (k, _)) in self.guard.data.iter().enumerate() {
+                if affected_keys.contains(k) {
+                    affected_indices.push(i);
+                }
+            }
 
-        for (k, v) in &self.pending_writes {
-            self.guard.data.insert(k.clone(), v.clone());
-        }
+            let pre_state_proof = self.guard.tree.proof(&affected_indices);
 
-        self.guard.refresh_tree();
-        let new_root = self.guard.tree.root().unwrap_or([0u8; 32]);
+            for (k, v) in &self.pending_writes {
+                self.guard.data.insert(k.clone(), v.clone());
+            }
 
-        Proof {
-            old_root: self.old_root,
-            new_root,
-            total_leaves_old,
-            affected_indices,
-            pre_state_proof,
+            self.guard.refresh_tree();
+            let new_root = self.guard.tree.root().unwrap_or([0u8; 32]);
+            Some(Proof {
+                old_root: self.old_root,
+                new_root,
+                total_leaves_old,
+                affected_indices,
+                pre_state_proof,
+            })
+        } else {
+            for (k, v) in &self.pending_writes {
+                self.guard.data.insert(k.clone(), v.clone());
+            }
+            None
         }
     }
 }
@@ -183,7 +192,7 @@ mod tests {
 
     #[test]
     fn test_secure_update_transition() {
-        let store = VerifiableDB::new();
+        let store = VerifiableDB::new(true);
 
         let mut t0 = store.begin();
         t0.put("alice", "100");
@@ -196,7 +205,7 @@ mod tests {
         assert_eq!(old_val, "100");
 
         txn.put("alice", "200");
-        let proof = txn.commit();
+        let proof = txn.commit().unwrap();
 
         let mut old_state = HashMap::new();
         old_state.insert("alice".to_string(), "100".to_string());
@@ -215,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_blind_write_is_covered() {
-        let store = VerifiableDB::new();
+        let store = VerifiableDB::new(true);
 
         let mut t0 = store.begin();
         t0.put("x", "10");
@@ -224,7 +233,7 @@ mod tests {
 
         let mut txn = store.begin();
         txn.put("x", "99");
-        let proof = txn.commit();
+        let proof = txn.commit().unwrap();
 
         let mut old_state = HashMap::new();
         old_state.insert("x".to_string(), "10".to_string());
