@@ -47,16 +47,11 @@ In this work we present a database system which provides cryptographically verif
 %%%% 7. PAPER CONTENT %%%%
 \section{Introduction}
 
-A core feature that Database systems provide is ACID transactions.
-This feature greatly simplifies application development by preventing race conditions.
-Developers rely on these guarantees to maintain data correctness.
+A core feature of database systems is the provision of ACID transactions. This feature greatly simplifies application development by preventing race conditions, allowing developers to rely on these guarantees to maintain data correctness. However, database implementations often fail to meet these guarantees. The Jepsen project \cite{b1} has shown that many production databases fail to provide the consistency levels they claim. These errors can lead to data corruption, application failures, and security vulnerabilities.
 
-However, database implementations often fail to meet these guarantees. The Jepsen project \cite{b1} has shown that many production databases fail to provide the consistency levels they claim.
-These errors can lead to data corruption, application failures, and security vulnerabilities.
 
-Users currently have no way to verify that a database provider is executing transactions correctly. They must trust the provider's claims. This work addresses this problem.
- We present a construction for a verifying that a database provides ACID transactions.
- In particular, we provide a construction for a database that proves to its clients that it provides Serializability. We compare our Merkle-tree based approach to LitmusDB \cite{b7}, a state-of-the-art system that uses RSA accumulators.
+
+Users currently have no way to verify that a database provider is executing transactions correctly; they must simply trust the provider's claims. This work addresses this problem. We present a construction for verifying that a database provides ACID transactions. In particular, we describe a Merkle-tree based system that proves to its clients that it provides Serializability.
 
 \section{Background}
 \subsection{Database Transactions}
@@ -184,7 +179,8 @@ Verifiable database research has two main categories: verifying analytic queries
 
 LitmusDB \cite{b7} is the state of the art system which uses RSA accumulators to provide constant-sized proofs and efficient key non-existence checks.
 Additionally, LitmusDB employs "Deterministic Reservation" concurrency control to batch non-conflicting transactions,
-aggregating their proofs into a single witness.
+aggregating their proofs into a single witness. The primary drawback of this concurrency control is that it does not allow for interactive transactions
+(transactions for which the read/write set is not known ahead of time).
 
 \section{Approach}
 
@@ -286,8 +282,14 @@ The performance of the verified key-value store is dominated by recomputing the 
 
 \section{Future Work}
 
-The primary areas for improvement are the following:
+There are two primary areas for improvement in our implementation: 1) since there is a global database lock, our database is effectively single-threaded
+and therefore cannot utilize multi-core CPUs and 2) the merkle tree implementation is suboptimal and imposes significant CPU overhead.
 
+The first of those issues can potentially be solved by integrating the system with a more sophisticated concurency control protocol
+such as two phase locking, OCC, or MVCC, although there is complexity here.
+
+It is possible to address the second of those issues with a higher performance merkle tree.  The state of the art here is the Sparse Merkle
+Tree \cite{b11} or the Merkle Patricia Tree \cite{b12}, which is used in Ethereum.
 
 \begin{samepage}
 \begin{thebibliography}{99}
@@ -301,6 +303,8 @@ The primary areas for improvement are the following:
 \bibitem{b8} J. Katz and Y. Lindell, Introduction To Modern Cryptography
 \bibitem{b9} P. A. Bernstein, V. Hadzilacos, and N. Goodman, Concurrency Control and Recovery in Database Systems
 \bibitem{b10} https://github.com/antouhou/rs-merkle
+\bibitem{b11} R. Dahlberg1, T. Pulls1, and R. Peeters2, Efficient Sparse Merkle Trees
+\bibitem{b12} https://ethereum.org/developers/docs/data-structures-and-encoding/patricia-merkle-trie/
 
 \end{thebibliography}
 \end{samepage}
