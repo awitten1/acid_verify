@@ -5,10 +5,10 @@ use std::sync::{Arc, RwLock, RwLockWriteGuard};
 
 pub type Hash = [u8; 32];
 
-pub fn hash_kv(key: &str, value: &str) -> Hash {
+pub fn hash_kv(key: u64, value: u64) -> Hash {
     let mut hasher = sha2::Sha256::new();
-    hasher.update(key.as_bytes());
-    hasher.update(value.as_bytes());
+    hasher.update(key.to_be_bytes());
+    hasher.update(value.to_be_bytes());
     hasher.finalize().into()
 }
 
@@ -21,7 +21,7 @@ pub struct Proof {
 }
 
 struct DB {
-    data: BTreeMap<String, String>,
+    data: BTreeMap<u64, u64>,
     tree: MerkleTree<Sha256>,
 }
 
@@ -39,9 +39,13 @@ impl DB {
             return;
         }
         let leaves: Vec<Hash> = self.data.iter()
-            .map(|(k, v)| hash_kv(k, v))
+            .map(|(k, v)| hash_kv(*k, *v))
             .collect();
         self.tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+    }
+
+    fn get_db_size(&self) -> usize {
+        self.data.len()
     }
 }
 
@@ -68,31 +72,35 @@ impl VerifiableDB {
             verify_txn: self.verify_txn,
         }
     }
+
+    pub fn get_db_size(&self) -> usize {
+        self.state.read().unwrap().get_db_size()
+    }
 }
 
 pub struct Transaction<'a> {
     guard: RwLockWriteGuard<'a, DB>,
-    performed_reads: HashMap<String, String>,
-    pending_writes: HashMap<String, String>,
+    performed_reads: HashMap<u64, u64>,
+    pending_writes: HashMap<u64, u64>,
     old_root: Hash,
     verify_txn: bool,
 }
 
 impl<'a> Transaction<'a> {
-    pub fn get(&mut self, key: &str) -> Option<String> {
-        if let Some(val) = self.pending_writes.get(key) {
-            return Some(val.clone());
+    pub fn get(&mut self, key: u64) -> Option<u64> {
+        if let Some(val) = self.pending_writes.get(&key) {
+            return Some(*val);
         }
 
-        let val = self.guard.data.get(key).cloned();
-        if let Some(ref v) = val {
-            self.performed_reads.insert(key.to_string(), v.clone());
+        let val = self.guard.data.get(&key).copied();
+        if let Some(v) = val {
+            self.performed_reads.insert(key, v);
         }
         val
     }
 
-    pub fn put(&mut self, key: &str, value: &str) {
-        self.pending_writes.insert(key.to_string(), value.to_string());
+    pub fn put(&mut self, key: u64, value: u64) {
+        self.pending_writes.insert(key, value);
     }
 
     pub fn commit(mut self) -> Option<Proof> {
@@ -101,10 +109,10 @@ impl<'a> Transaction<'a> {
 
             let mut affected_keys = HashSet::new();
             for k in self.performed_reads.keys() {
-                affected_keys.insert(k.clone());
+                affected_keys.insert(*k);
             }
             for k in self.pending_writes.keys() {
-                affected_keys.insert(k.clone());
+                affected_keys.insert(*k);
             }
 
             let mut affected_indices = Vec::new();
@@ -117,7 +125,7 @@ impl<'a> Transaction<'a> {
             let pre_state_proof = self.guard.tree.proof(&affected_indices);
 
             for (k, v) in &self.pending_writes {
-                self.guard.data.insert(k.clone(), v.clone());
+                self.guard.data.insert(*k, *v);
             }
 
             self.guard.refresh_tree();
@@ -131,7 +139,7 @@ impl<'a> Transaction<'a> {
             })
         } else {
             for (k, v) in &self.pending_writes {
-                self.guard.data.insert(k.clone(), v.clone());
+                self.guard.data.insert(*k, *v);
             }
             None
         }
@@ -140,16 +148,16 @@ impl<'a> Transaction<'a> {
 
 pub fn verify_secure_update(
     proof: &Proof,
-    old_state: &HashMap<String, String>,
-    new_state: &HashMap<String, String>,
+    old_state: &HashMap<u64, u64>,
+    new_state: &HashMap<u64, u64>,
 ) -> bool {
-    let mut sorted_keys: Vec<&String> = old_state.keys().collect();
+    let mut sorted_keys: Vec<&u64> = old_state.keys().collect();
     sorted_keys.sort();
 
     let old_leaves: Vec<Hash> = sorted_keys.iter()
         .map(|k| {
             let val = old_state.get(*k).expect("Key missing in old state");
-            hash_kv(k, val)
+            hash_kv(**k, *val)
         })
         .collect();
 
@@ -168,7 +176,7 @@ pub fn verify_secure_update(
     let new_leaves: Vec<Hash> = sorted_keys.iter()
         .map(|k| {
             let val = new_state.get(*k).or_else(|| old_state.get(*k)).unwrap();
-            hash_kv(k, val)
+            hash_kv(**k, *val)
         })
         .collect();
 
@@ -194,24 +202,25 @@ mod tests {
     fn test_secure_update_transition() {
         let store = VerifiableDB::new(true);
 
+        // t0: Insert 1 -> 100, 2 -> 50
         let mut t0 = store.begin();
-        t0.put("alice", "100");
-        t0.put("bob", "50");
+        t0.put(1, 100);
+        t0.put(2, 50);
         t0.commit();
 
         let mut txn = store.begin();
 
-        let old_val = txn.get("alice").expect("Alice should exist");
-        assert_eq!(old_val, "100");
+        let old_val = txn.get(1).expect("Key 1 should exist");
+        assert_eq!(old_val, 100);
 
-        txn.put("alice", "200");
+        txn.put(1, 200);
         let proof = txn.commit().unwrap();
 
         let mut old_state = HashMap::new();
-        old_state.insert("alice".to_string(), "100".to_string());
+        old_state.insert(1, 100);
 
         let mut new_state = HashMap::new();
-        new_state.insert("alice".to_string(), "200".to_string());
+        new_state.insert(1, 200);
 
         let is_valid = verify_secure_update(
             &proof,
@@ -226,20 +235,21 @@ mod tests {
     fn test_blind_write_is_covered() {
         let store = VerifiableDB::new(true);
 
+        // t0: Insert 10 -> 10, 20 -> 20
         let mut t0 = store.begin();
-        t0.put("x", "10");
-        t0.put("y", "20");
+        t0.put(10, 10);
+        t0.put(20, 20);
         t0.commit();
 
         let mut txn = store.begin();
-        txn.put("x", "99");
+        txn.put(10, 99);
         let proof = txn.commit().unwrap();
 
         let mut old_state = HashMap::new();
-        old_state.insert("x".to_string(), "10".to_string());
+        old_state.insert(10, 10);
 
         let mut new_state = HashMap::new();
-        new_state.insert("x".to_string(), "99".to_string());
+        new_state.insert(10, 99);
 
         let is_valid = verify_secure_update(&proof, &old_state, &new_state);
         assert!(is_valid);

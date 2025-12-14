@@ -11,6 +11,8 @@
 \usepackage{tikz}
 \usepackage{forest}
 \usepackage{listings}
+\usepackage{enumitem}
+\usepackage{graphicx}
 
 \usetikzlibrary{arrows.meta} % For nicer arrowheads
 
@@ -38,8 +40,7 @@
 
 %%%% 6. ABSTRACT %%%%
 \begin{abstract}
-In this work we present a database system which provides cryptographically verifiable ACID transactions.  We evaluate our work,
-compare it to the related system LitmusDB, and describe potential improvements to our system.
+In this work we present a database system which provides cryptographically verifiable ACID transactions. We provide a construction for a database that proves to its clients that it provides Serializability. We evaluate our work by comparing the throughput of our verified implementation against an unverified baseline and describe potential improvements to our system.
 \end{abstract}
 
 
@@ -201,7 +202,7 @@ be computed ahead of time when data is initially uploaded, or we can assume that
 and the merkle tree is the empty merkle tree.
 
 On transaction commit, the server now needs to provide a proof of two things:
-\begin{enumerate}
+\begin{enumerate}[nosep]
   \item All reads that occurred in transaction $\pi\left(k\right)$ were present in merkle tree $MT_{k-1}$
   \item The transition from $MT_{k-1}$ to $MT_{k}$ is valid based on the writes that have occurred in transaction $\pi\left(k\right)$
 \end{enumerate}
@@ -218,7 +219,6 @@ what the next version of the tree will be given the writes we performed.
 
 As a result the total size of the proof returned by the server is $O((W+R)\log n)$.  In an analytic workload where millions
 of records could be read at a time this is not acceptable, but for a transactional workload, it may be acceptable.
-
 \subsection{Implementation}
 
 The API we implement is overviewed in \autoref{lst:api}. Users begin transactions, then execute a series of get and put
@@ -226,6 +226,31 @@ operations from a single thread on those transactions.  Currently the system has
 acquired when a transaction begins.  It supports serializability because only a single transaction can execute at a time
 but also provides suboptimal peformance.  A high performance system would use a concurency
 control protocol such as two phase locking \cite{b9}, MVCC, or OCC \cite{b2}.  We discuss this further in the future work section.
+
+
+On transaction commit, our system does the following:
+\begin{enumerate}[nosep]
+  \item Generate proofs for all reads on merkle tree.
+  \item Generate proofs for all writes on the merkle tree.
+  \item Apply all writes to the database (organized as a B-tree).
+  \item Fully reconstruct the merkle tree.
+  \item Returns a proof object containing all proofs for reads and writes, the original merkle tree root, and the new merkle tree root.
+\end{enumerate}
+
+
+This allows the client to prove that reads on the original merkle tree were correct.
+It also allows the client
+to prove that the transition from the old merkle tree
+to the new merkle tree was a valid transition.
+
+The glaring issue with that protocol is that fully reconstructing
+the merkle tree is an $O\left(n\right)$ operation and
+is the primary bottleneck in the implementation.
+There is no fundamental reason for requiring this though, it is possible
+for merkle trees to support updating leaves.
+However, standard merkle tree implementations do not generally support updates
+(our implementation uses the Rust rs\_merkle \cite{b10} implementation).
+We discuss as future work improvements in this area.
 
  \begin{minipage}{\textwidth}
 \begin{lstlisting}[caption={API overview}, label={lst:api}]
@@ -241,7 +266,27 @@ impl Transaction {
 \end{lstlisting}
 \end{minipage}
 
+\section{Evaluation}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=60mm]{linegraph.png}
+    \caption{This compares the throughput of an unverified transactional kv-store with a verified transactional kv-store.}
+    \label{fig:comparison}
+\end{figure}
+
+For evaluation we compare our key value store when it generates proofs of transactionality and when it does not.
+\autoref{fig:comparison} compares the throughput.  As mentioned before, our key-value store is effectively a
+single-threaded in-memory system as we have implemented it.  Therefore a single core is constantly at $100\%$ while
+these experiments run.  The performance of the non-verified key-value store is directly related to the
+single thread performance of CPU that this was run on (this was run on a MacBook Pro M2 Core) and the Rust standard library B-tree
+implementation.
+
+The performance of the verified key-value store is dominated by recomputing the merkle tree of the data after every transaction.
+
 \section{Future Work}
+
+The primary areas for improvement are the following:
 
 
 \begin{samepage}
@@ -255,6 +300,8 @@ impl Transaction {
 \bibitem{b7} Y. Xia, X. Yu, M. Butrovich, A. Pavlo, and S. Devadas, Litmus: Towards a Practical Database Management System with Verifiable ACID Properties and Transaction Correctness
 \bibitem{b8} J. Katz and Y. Lindell, Introduction To Modern Cryptography
 \bibitem{b9} P. A. Bernstein, V. Hadzilacos, and N. Goodman, Concurrency Control and Recovery in Database Systems
+\bibitem{b10} https://github.com/antouhou/rs-merkle
+
 \end{thebibliography}
 \end{samepage}
 
