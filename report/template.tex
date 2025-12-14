@@ -10,6 +10,8 @@
 
 \usepackage{tikz}
 \usepackage{forest}
+\usepackage{listings}
+
 \usetikzlibrary{arrows.meta} % For nicer arrowheads
 
 %%%% 3. AUTHOR, INSTITUTE %%%%
@@ -44,18 +46,19 @@ compare it to the related system LitmusDB, and describe potential improvements t
 %%%% 7. PAPER CONTENT %%%%
 \section{Introduction}
 
-A core feature that database systems provide are ACID transactions.
-ACID transactions enable application developers to build their applications
-without worrying about race conditions on their data.
+A core feature that Database systems provide is ACID transactions.
+This feature greatly simplifies application development by preventing race conditions.
+Developers rely on these guarantees to maintain data correctness.
 
-Unfortunately, many database providers fail to provide the consistency guarantees that they
-claim to provide.  The Jepsen project \cite{b1} has found that
-many popular, industry strength systems have failed to provide ACID.  It would therefore benefit
-users if databases could cryptographically prove that they provide ACID.
+However, database implementations often fail to meet these guarantees. The Jepsen project \cite{b1} has shown that many production databases fail to provide the consistency levels they claim.
+These errors can lead to data corruption, application failures, and security vulnerabilities.
 
+Users currently have no way to verify that a database provider is executing transactions correctly. They must trust the provider's claims. This work addresses this problem.
+ We present a construction for a verifying that a database provides ACID transactions.
+ In particular, we provide a construction for a database that proves to its clients that it provides Serializability. We compare our Merkle-tree based approach to LitmusDB \cite{b7}, a state-of-the-art system that uses RSA accumulators.
 
 \section{Background}
-\subsection{Database Transaction}
+\subsection{Database Transactions}
 
 Users of a database system submit transactions to the database system.  A transaction
 is a sequence of reads and writes.  High performance systems run many transations concurrently from
@@ -133,7 +136,7 @@ merkle tree is built over the $x_i$.
 The server is able to prove to the client that a given $x_i$ is stored on the server by providing the nodes
 adjacent to the path from $x_i$ to the root in the tree.
 These nodes allow a client to recompute the root of the tree and compare it against the root is has stored.
-This proof is depicted in \autoref{fig:merkle_proof}.
+This proof is depicted in \autoref{fig:merkle_proof}.  The size of such a proof is $O\left(\log n\right)$.
 
 \begin{figure}[h]
   \centering
@@ -169,24 +172,90 @@ This proof is depicted in \autoref{fig:merkle_proof}.
       ]
     ]
   \end{forest}
-  \caption{A Merkle Tree proof.  To prove that $L_2$ is stored in the tree, the server sends the nodes in red.}
+  \caption{A Merkle Tree proof.  To prove that $L_2$ is stored in the tree, the server sends the nodes in red,
+  which allow a client to recompute the root.}
   \label{fig:merkle_proof}
 \end{figure}
 
 \section{Related Work}
-There is related work such as zkSQL \cite{b3} and vSQL \cite{b4} for providing authenticated answers
-to ad-hoc SQL queries.  This involves providing ZK-proofs of particular SQL operators (such as hash join and filter operators) and composing those proofs.
-A recent system LitmusDB \cite{b3} set out to solve
 
+Verifiable database research has two main categories: verifying analytic queries and ensuring transactional correctness. Systems like zkSQL \cite{b3} and vSQL \cite{b4} target the former, using Zero-Knowledge proofs to authenticate complex SQL query results. However, they do not address the other main correctness concern: ACID transactions.
+
+LitmusDB \cite{b7} is the state of the art system which uses RSA accumulators to provide constant-sized proofs and efficient key non-existence checks.
+Additionally, LitmusDB employs "Deterministic Reservation" concurrency control to batch non-conflicting transactions,
+aggregating their proofs into a single witness.
+
+\section{Approach}
+
+\subsection{Construction}
+
+In this work we implement a kv-store where each transaction is a series of Get and Put operations.
+
+The main idea of our construction follows from the definition of serializability, which we repeat here, that
+that \(d_{final} = \left( T_{\pi(1)} \circ \dots \circ T_{\pi(n)} \right) \left( d_{initial} \right)\).
+We associate with each intermediate state of the database a merkle tree $MT_k$ which
+is computed on the prefix $\left( T_{\pi(1)} \circ \dots \circ T_{\pi(k)} \right) \left( d_{initial} \right)$.
+
+We assume that clients of the database know the initial merkle tree of the database $MT_0$.  This can either
+be computed ahead of time when data is initially uploaded, or we can assume that the database is initially empty
+and the merkle tree is the empty merkle tree.
+
+On transaction commit, the server now needs to provide a proof of two things:
+\begin{enumerate}
+  \item All reads that occurred in transaction $\pi\left(k\right)$ were present in merkle tree $MT_{k-1}$
+  \item The transition from $MT_{k-1}$ to $MT_{k}$ is valid based on the writes that have occurred in transaction $\pi\left(k\right)$
+\end{enumerate}
+
+The first of those is implemented by returning a list of merkle tree proofs that $MT_{k-1}$ contains all
+values read.  The size of this proof is size $O(R\log n)$ where $R$ is the number of values read.  The client can then
+prove to itself that all the values it read were in that snapshot of the database.  This linear factor of $R$
+is only acceptable in transactional workloads where only a few records are updated in a transaction.
+
+The second of those is implemented by returning a list of merkle tree proofs for all preimages of keys written.
+Suppose the set of writes $W=\{\left(k_1,v_1\right),...,\left(k_w,v_w\right)\}$ where the transaction performs $w$ writes.
+We return merkle tree proofs for each of the previous values of the keys.  These merkle tree proofs allow us to compute
+what the next version of the tree will be given the writes we performed.
+
+As a result the total size of the proof returned by the server is $O((W+R)\log n)$.  In an analytic workload where millions
+of records could be read at a time this is not acceptable, but for a transactional workload, it may be acceptable.
+
+\subsection{Implementation}
+
+The API we implement is overviewed in \autoref{lst:api}. Users begin transactions, then execute a series of get and put
+operations from a single thread on those transactions.  Currently the system has a global lock on that database that is
+acquired when a transaction begins.  It supports serializability because only a single transaction can execute at a time
+but also provides suboptimal peformance.  A high performance system would use a concurency
+control protocol such as two phase locking \cite{b9}, MVCC, or OCC \cite{b2}.  We discuss this further in the future work section.
+
+ \begin{minipage}{\textwidth}
+\begin{lstlisting}[caption={API overview}, label={lst:api}]
+impl DB {
+  pub fn begin(&self) -> Transaction;
+}
+
+impl Transaction {
+  pub fn get(&mut self, key: &str) -> Option<String>;
+  pub fn put(&mut self, key: &str, value: &str);
+  pub fn commit(mut self) -> Proof;
+}
+\end{lstlisting}
+\end{minipage}
+
+\section{Future Work}
+
+
+\begin{samepage}
 \begin{thebibliography}{99}
-
 \bibitem{b1} K. Kingbury https://jepsen.io/analyses Jepsen Analyses
 \bibitem{b2} H.T. Kung and John T. Robinson, On Optimistic Methods for Concurrency Control
 \bibitem{b3} X. Li, C. Weng, Y. Xu, X. Wang, and J. Rogers, ZKSQL: Verifiable and Efficient Query Evaluation with Zero-Knowledge Proofs
 \bibitem{b4} Y. Zheng et al, vSQL: Verifying Arbitrary SQL Queries over Dynamic Outsourced Databases
 \bibitem{b5} Cahill et al, Serializable Isolation for Snapshot Databases
 \bibitem{b6} T. Warszawski and P. Bailis, ACIDRain: Concurrency-Related Attacks on Database-Backed Web Applications
+\bibitem{b7} Y. Xia, X. Yu, M. Butrovich, A. Pavlo, and S. Devadas, Litmus: Towards a Practical Database Management System with Verifiable ACID Properties and Transaction Correctness
 \bibitem{b8} J. Katz and Y. Lindell, Introduction To Modern Cryptography
+\bibitem{b9} P. A. Bernstein, V. Hadzilacos, and N. Goodman, Concurrency Control and Recovery in Database Systems
 \end{thebibliography}
+\end{samepage}
 
 \end{document}
