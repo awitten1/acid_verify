@@ -17,7 +17,6 @@ FetchContent_MakeAvailable(googletest)
 
 add_library(verified_db INTERFACE)
 target_include_directories(verified_db INTERFACE ${CMAKE_CURRENT_LIST_DIR})
-target_include_directories(verified_db INTERFACE ${CMAKE_CURRENT_LIST_DIR})
 
 add_executable(test tests/test.cpp)
 
