@@ -13,6 +13,9 @@
 \usepackage{listings}
 \usepackage{enumitem}
 \usepackage{graphicx}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\raggedbottom
 
 \usetikzlibrary{arrows.meta} % For nicer arrowheads
 
@@ -40,7 +43,11 @@
 
 %%%% 6. ABSTRACT %%%%
 \begin{abstract}
-In this work we present a database system which provides cryptographically verifiable ACID transactions. We provide a construction for a database that proves to its clients that it provides Serializability. We evaluate our work by comparing the throughput of our verified implementation against an unverified baseline and describe potential improvements to our system.
+In this work we present a database system which provides cryptographically verifiable ACID transactions. We provide a construction for a database that proves to its clients that it provides Serializability.
+We evaluate our work by comparing the throughput
+of our verified implementation against an unverified baseline and describe potential improvements to our system.
+
+We additionally make our implementation available as an open source library \url{https://github.com/awitten1/acid_verify}.
 \end{abstract}
 
 
@@ -85,7 +92,7 @@ to provide Serializability.  The goal of this work is to provide cryptographic p
 
 This work depends heavily on Merkle Trees. We therefore review Merkle Trees here and describe which properties we depend on.
 
-\begin{figure}[h]
+\begin{figure}[htbp]
   \centering
   % Forest configuration
   \begin{forest}
@@ -134,7 +141,7 @@ adjacent to the path from $x_i$ to the root in the tree.
 These nodes allow a client to recompute the root of the tree and compare it against the root is has stored.
 This proof is depicted in \autoref{fig:merkle_proof}.  The size of such a proof is $O\left(\log n\right)$.
 
-\begin{figure}[h]
+\begin{figure}[htbp]
   \centering
   % Forest configuration
   \begin{forest}
@@ -180,7 +187,7 @@ Verifiable database research has two main categories: verifying analytic queries
 LitmusDB \cite{b7} is the state of the art system which uses RSA accumulators to provide constant-sized proofs and efficient key non-existence checks.
 Additionally, LitmusDB employs "Deterministic Reservation" concurrency control to batch non-conflicting transactions,
 aggregating their proofs into a single witness. The primary drawback of this concurrency control is that it does not allow for interactive transactions
-(transactions for which the read/write set is not known ahead of time).
+(transactions for which the read/write set is not known ahead of time), however that is not a fundamental requirement of that system.
 
 \section{Approach}
 
@@ -215,6 +222,41 @@ what the next version of the tree will be given the writes we performed.
 
 As a result the total size of the proof returned by the server is $O((W+R)\log n)$.  In an analytic workload where millions
 of records could be read at a time this is not acceptable, but for a transactional workload, it may be acceptable.
+
+This algorithm is sketched in \autoref{alg:verify}.
+
+\begin{algorithm}[t]
+\caption{Client-Side Transaction Verification}
+\label{alg:verify}
+\begin{algorithmic}[1]
+\State \textbf{Input:} Old Root $R_{old}$, New Root $R_{new}$
+\State \textbf{Input:} Read Set $S_R = \{(k, v)\}$, Proofs $\Pi_R$
+\State \textbf{Input:} Write Set $S_W = \{(k, v)\}$, Proofs $\Pi_W$
+\For{each $(k_i, v_i)$ in $S_R$}
+    \State $\pi_i \gets \Pi_R[i]$
+    \State $h_{leaf} \gets \text{Hash}(k_i\|v_i)$
+    \State $computed\_root \gets \text{ComputeRoot}(h_{leaf}, \pi_i)$
+    \If{$computed\_root \neq R_{old}$}
+        \Return \textbf{False}
+    \EndIf
+\EndFor
+\Statex
+\State
+\State $curr\_root \gets R_{old}$
+\For{each $(k_j, v_j)$ in $S_W$}
+    \State $\pi_j \gets \Pi_W[j]$
+    \State $h_{new\_leaf} \gets \text{Hash}(k_k\|v_j)$
+    \State $curr\_root \gets \text{ComputeRoot}(h_{new\_leaf}, \pi_j)$
+\EndFor
+\Statex
+\If{$curr\_root == R_{new}$}
+    \Return \textbf{True}
+\Else
+    \Return \textbf{False}
+\EndIf
+\end{algorithmic}
+\end{algorithm}
+
 \subsection{Implementation}
 
 The API we implement is overviewed in \autoref{lst:api}. Users begin transactions, then execute a series of get and put
@@ -273,7 +315,7 @@ impl Transaction {
 
 For evaluation we compare our key value store when it generates proofs of transactionality and when it does not.
 \autoref{fig:comparison} compares the throughput.  As mentioned before, our key-value store is effectively a
-single-threaded in-memory system as we have implemented it.  Therefore a single core is constantly at $100\%$ while
+single-threaded in-memory system as we have implemented it.  Therefore a single core is constantly at 100\% utilization while
 these experiments run.  The performance of the non-verified key-value store is directly related to the
 single thread performance of CPU that this was run on (this was run on a MacBook Pro M2 Core) and the Rust standard library B-tree
 implementation.
@@ -289,9 +331,10 @@ The first of those issues can potentially be solved by integrating the system wi
 such as two phase locking, OCC, or MVCC, although there is complexity here.
 
 It is possible to address the second of those issues with a higher performance merkle tree.  The state of the art here is the Sparse Merkle
-Tree \cite{b11} or the Merkle Patricia Tree \cite{b12}, which is used in Ethereum.
+Tree \cite{b11} or the Merkle Patricia Tree, which is used in Ethereum \cite{b12}.
 
-\begin{samepage}
+
+%\begin{samepage}
 \begin{thebibliography}{99}
 \bibitem{b1} K. Kingbury https://jepsen.io/analyses Jepsen Analyses
 \bibitem{b2} H.T. Kung and John T. Robinson, On Optimistic Methods for Concurrency Control
@@ -307,6 +350,6 @@ Tree \cite{b11} or the Merkle Patricia Tree \cite{b12}, which is used in Ethereu
 \bibitem{b12} https://ethereum.org/developers/docs/data-structures-and-encoding/patricia-merkle-trie/
 
 \end{thebibliography}
-\end{samepage}
+%\end{samepage}
 
 \end{document}
