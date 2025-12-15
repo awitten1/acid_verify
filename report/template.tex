@@ -333,6 +333,16 @@ such as two phase locking, OCC, or MVCC, although there is complexity here.
 It is possible to address the second of those issues with a higher performance merkle tree.  The state of the art here is the Sparse Merkle
 Tree \cite{b11} or the Merkle Patricia Tree, which is used in Ethereum \cite{b12}.
 
+\section{Conclusion}
+
+We have presented a construction for cryptographically verifying
+that database systems provide serializable transactions.
+While our current implementation demonstrates the feasibility of this approach,
+significant engineering work remains to achieve production-ready performance.
+Nevertheless, this work establishes that verifiable ACID transactions are achievable with reasonable proof sizes
+for transactional workloads (which read and write only a few records in a transaction),
+opening the possibilty for more trustworthy database systems.
+
 
 %\begin{samepage}
 \begin{thebibliography}{99}
